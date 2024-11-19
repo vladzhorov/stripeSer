@@ -1,0 +1,90 @@
+name: On-Demand Test and Report
+
+on:
+  workflow_dispatch:
+  
+jobs:
+  set-before-timer:
+    name: Run before timers
+    runs-on: ubuntu-latest
+    outputs:
+      start_time: ${{ steps.mark-start-time.outputs.start_time }}
+    
+    steps:
+    - name: Mark start time
+      id: mark-start-time
+      run: echo "::set-output name=start_time::$(date +%s)"
+        
+  run-e2e:
+    name: Run all test suites
+    uses: ./.github/workflows/validate-test.yml
+    with:
+      test_suite: '*'
+      source_code_branch: solution
+    secrets:
+      token: ${{ secrets.WORKFLOW_TOKEN }}
+      stripe-secret-key: ${{ secrets.STRIPE_SECRET_KEY }}
+      stripe-publishable-key: ${{ secrets.STRIPE_PUBLISHABLE_KEY }}
+
+  set-after-timer:
+    name: Run after timers
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    needs:
+      - set-before-timer
+      - run-e2e
+
+    steps:
+      - name: Mark end time
+        if: ${{ always() }}
+        id: mark-end-time
+        run: echo "::set-output name=end::$(date +%s)"
+        
+      - name: Calculate duration
+        if: ${{ always() }}
+        id: calc
+        run: |
+            START_TIME=${{ needs.set-before-timer.outputs.start_time }}
+            END_TIME=${{ steps.mark-end-time.outputs.end }}
+            
+            # Explicitly convert timestamps to integers
+            START_TIME=$((START_TIME))
+            END_TIME=$((END_TIME))
+        
+            ELAPSED_TIME=$((END_TIME - START_TIME))
+            MINUTES=$((ELAPSED_TIME / 60))
+            SECONDS=$((ELAPSED_TIME % 60))
+            DURATION="${MINUTES}m ${SECONDS}s"
+            echo "DURATION=$DURATION" >> $GITHUB_ENV
+            echo "Duration is: ${DURATION}"
+
+      - name: Notify Slack on success
+        if: ${{ success() && needs.run-e2e.result == 'success' }}
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          fields: repo,workflowRun
+          custom_payload: |
+            {
+              "text": ":check: Tests passed: <https://github.com/${{github.repository}}|${{github.event.repository.name}}> after running for ${{ env.DURATION }}. (<https://github.com/${{github.repository}}/actions/runs/${{ github.run_id }}|logs>)",
+              "username": "dev-challenge-operator",
+              "icon_emoji": ":certification:",
+              "channel": "#training-and-cert-tech-bots"
+            }
+        env:
+         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}    
+      - name: Notify Slack on failure
+        if: ${{ failure() || needs.run-e2e.result != 'success' }}
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          fields: repo,workflowRun
+          custom_payload: |
+            {
+              "text": ":commit-failed: *Tests failed: <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ github.event.repository.name }}> after running for ${{ env.DURATION }}. (<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|logs>)*",
+              "username": "dev-challenge-operator",
+              "icon_emoji": ":certification:",
+              "channel": "#training-and-cert-tech-bots"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} 
